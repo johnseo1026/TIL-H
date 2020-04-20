@@ -137,7 +137,6 @@ def stream():
     while(True):
 
         cap = cv2.VideoCapture(0) #capture webcam
-
     
         ret, img = cap.read()
         #img = cv2.resize(img, (640, 360))
@@ -146,7 +145,7 @@ def stream():
 
         for (x,y,w,h) in faces:
             if w > 130: #ignore small faces
-
+                
                 #mention detected face
                 """overlay = img.copy(); output = img.copy(); opacity = 0.6
                 cv2.rectangle(img,(x,y),(x+w,y+h),(128,128,128),cv2.FILLED) #draw rectangle to main image
