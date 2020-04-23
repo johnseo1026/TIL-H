@@ -1,222 +1,142 @@
-from flask import Flask, render_template, Response
-import cv2 as cv2
-from keras.models import Model, Sequential
-from keras.layers import Input, Convolution2D, ZeroPadding2D, MaxPooling2D, Flatten, Dense, Dropout, Activation
-from PIL import Image
-from keras.preprocessing.image import load_img, save_img, img_to_array
-from keras.applications.imagenet_utils import preprocess_input
-from keras.preprocessing import image
-from keras.models import model_from_json
-import matplotlib.pyplot as plt
-from os import listdir
-import numpy as np
+# USAGE
+# python webstreaming.py --ip 0.0.0.0 --port 8000
 
+# import the necessary packages
+from imagesearch.face_detection import Camera
+from imutils.video import VideoStream
+from flask import Response
+from flask import Flask
+from flask import render_template
+import threading
+import argparse
+import datetime
+import imutils
+import time
+import cv2
 
+# initialize the output frame and a lock used to ensure thread-safe
+# exchanges of the output frames (useful for multiple browsers/tabs
+# are viewing tthe stream)
+outputFrame = None
+lock = threading.Lock()
 
-#-----------------------
-#you can find male and female icons here: https://github.com/serengil/tensorflow-101/tree/master/dataset
-
-enableGenderIcons = True
-
-male_icon = cv2.imread("male.jpg")
-male_icon = cv2.resize(male_icon, (40, 40))
-
-female_icon = cv2.imread("female.jpg")
-female_icon = cv2.resize(female_icon, (40, 40))
-#-----------------------
-
-face_cascade = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
-
-
+# initialize a flask object
 app = Flask(__name__)
 
+# initialize the video stream and allow the camera sensor to
+# warmup
+#vs = VideoStream(usePiCamera=1).start()
+vs = VideoStream(src=0).start()
+time.sleep(2.0)
 
-def preprocess_image(image_path):
-    img = load_img(image_path, target_size=(224, 224))
-    img = img_to_array(img)
-    img = np.expand_dims(img, axis=0)
-    img = preprocess_input(img)
-    return img
-
-def loadVggFaceModel():
-    model = Sequential()
-    model.add(ZeroPadding2D((1,1),input_shape=(224,224, 3)))
-    model.add(Convolution2D(64, (3, 3), activation='relu'))
-    model.add(ZeroPadding2D((1,1)))
-    model.add(Convolution2D(64, (3, 3), activation='relu'))
-    model.add(MaxPooling2D((2,2), strides=(2,2)))
-
-    model.add(ZeroPadding2D((1,1)))
-    model.add(Convolution2D(128, (3, 3), activation='relu'))
-    model.add(ZeroPadding2D((1,1)))
-    model.add(Convolution2D(128, (3, 3), activation='relu'))
-    model.add(MaxPooling2D((2,2), strides=(2,2)))
-
-    model.add(ZeroPadding2D((1,1)))
-    model.add(Convolution2D(256, (3, 3), activation='relu'))
-    model.add(ZeroPadding2D((1,1)))
-    model.add(Convolution2D(256, (3, 3), activation='relu'))
-    model.add(ZeroPadding2D((1,1)))
-    model.add(Convolution2D(256, (3, 3), activation='relu'))
-    model.add(MaxPooling2D((2,2), strides=(2,2)))
-
-    model.add(ZeroPadding2D((1,1)))
-    model.add(Convolution2D(512, (3, 3), activation='relu'))
-    model.add(ZeroPadding2D((1,1)))
-    model.add(Convolution2D(512, (3, 3), activation='relu'))
-    model.add(ZeroPadding2D((1,1)))
-    model.add(Convolution2D(512, (3, 3), activation='relu'))
-    model.add(MaxPooling2D((2,2), strides=(2,2)))
-
-    model.add(ZeroPadding2D((1,1)))
-    model.add(Convolution2D(512, (3, 3), activation='relu'))
-    model.add(ZeroPadding2D((1,1)))
-    model.add(Convolution2D(512, (3, 3), activation='relu'))
-    model.add(ZeroPadding2D((1,1)))
-    model.add(Convolution2D(512, (3, 3), activation='relu'))
-    model.add(MaxPooling2D((2,2), strides=(2,2)))
-
-    model.add(Convolution2D(4096, (7, 7), activation='relu'))
-    model.add(Dropout(0.5))
-    model.add(Convolution2D(4096, (1, 1), activation='relu'))
-    model.add(Dropout(0.5))
-    model.add(Convolution2D(2622, (1, 1)))
-    model.add(Flatten())
-    model.add(Activation('softmax'))
-
-    return model
-
-def ageModel():
-    model = loadVggFaceModel()
-
-    base_model_output = Sequential()
-    base_model_output = Convolution2D(101, (1, 1), name='predictions')(model.layers[-4].output)
-    base_model_output = Flatten()(base_model_output)
-    base_model_output = Activation('softmax')(base_model_output)
-
-    age_model = Model(inputs=model.input, outputs=base_model_output)
-
-    #you can find the pre-trained weights for age prediction here: https://drive.google.com/file/d/1YCox_4kJ-BYeXq27uUbasu--yz28zUMV/view?usp=sharing
-    age_model.load_weights("age_model_weights.h5")
-
-    return age_model
-
-def genderModel():
-    model = loadVggFaceModel()
-
-    base_model_output = Sequential()
-    base_model_output = Convolution2D(2, (1, 1), name='predictions')(model.layers[-4].output)
-    base_model_output = Flatten()(base_model_output)
-    base_model_output = Activation('softmax')(base_model_output)
-
-    gender_model = Model(inputs=model.input, outputs=base_model_output)
-
-    #you can find the pre-trained weights for gender prediction here: https://drive.google.com/file/d/1wUXRVlbsni2FN9-jkS_f4UTUrm1bRLyk/view?usp=sharing
-    gender_model.load_weights("gender_model_weights.h5")
-
-    return gender_model
-
-age_model = ageModel()
-gender_model = genderModel()
-
-#age model has 101 outputs and its outputs will be multiplied by its index label. sum will be apparent age
-output_indexes = np.array([i for i in range(0, 101)])
-
-
-
-@app.route('/')
+@app.route("/")
 def index():
-    return render_template('index.html')
-    
-@app.route('/info')
-def info():
-    return render_template('info.html')
+	# return the rendered template
+	return render_template("index.html")
 
+def detect_motion(frameCount):
+	# grab global references to the video stream, output frame, and
+	# lock variables
+	global vs, outputFrame, lock
 
-def stream():
-    while(True):
+	# initialize the motion detector and the total number of frames
+	# read thus far
+	md = SingleMotionDetector(accumWeight=0.1)
+	total = 0
 
-        cap = cv2.VideoCapture(0) #capture webcam
+	# loop over frames from the video stream
+	while True:
+		# read the next frame from the video stream, resize it,
+		# convert the frame to grayscale, and blur it
+		frame = vs.read()
+		frame = imutils.resize(frame, width=400)
+		gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+		gray = cv2.GaussianBlur(gray, (7, 7), 0)
 
-    
-        ret, img = cap.read()
-        #img = cv2.resize(img, (640, 360))
+		# grab the current timestamp and draw it on the frame
+		timestamp = datetime.datetime.now()
+		cv2.putText(frame, timestamp.strftime(
+			"%A %d %B %Y %I:%M:%S%p"), (10, frame.shape[0] - 10),
+			cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 255), 1)
 
-        faces = face_cascade.detectMultiScale(img, 1.3, 5)
+		# if the total number of frames has reached a sufficient
+		# number to construct a reasonable background model, then
+		# continue to process the frame
+		if total > frameCount:
+			# detect motion in the image
+			motion = md.detect(gray)
 
-        for (x,y,w,h) in faces:
-            if w > 130: #ignore small faces
+			# cehck to see if motion was found in the frame
+			if motion is not None:
+				# unpack the tuple and draw the box surrounding the
+				# "motion area" on the output frame
+				(thresh, (minX, minY, maxX, maxY)) = motion
+				cv2.rectangle(frame, (minX, minY), (maxX, maxY),
+					(0, 0, 255), 2)
+		
+		# update the background model and increment the total number
+		# of frames read thus far
+		md.update(gray)
+		total += 1
 
-                #mention detected face
-                """overlay = img.copy(); output = img.copy(); opacity = 0.6
-                cv2.rectangle(img,(x,y),(x+w,y+h),(128,128,128),cv2.FILLED) #draw rectangle to main image
-                cv2.addWeighted(overlay, opacity, img, 1 - opacity, 0, img)"""
-                cv2.rectangle(img,(x,y),(x+w,y+h),(128,128,128),1) #draw rectangle to main image
+		# acquire the lock, set the output frame, and release the
+		# lock
+		with lock:
+			outputFrame = frame.copy()
+		
+def generate():
+	# grab global references to the output frame and lock variables
+	global outputFrame, lock
 
-                #extract detected face
-                detected_face = img[int(y):int(y+h), int(x):int(x+w)] #crop detected face
+	# loop over frames from the output stream
+	while True:
+		# wait until the lock is acquired
+		with lock:
+			# check if the output frame is available, otherwise skip
+			# the iteration of the loop
+			if outputFrame is None:
+				continue
 
-                try:
-                    #age gender data set has 40% margin around the face. expand detected face.
-                    margin = 30
-                    margin_x = int((w * margin)/100); margin_y = int((h * margin)/100)
-                    detected_face = img[int(y-margin_y):int(y+h+margin_y), int(x-margin_x):int(x+w+margin_x)]
-                except:
-                    print("detected face has no margin")
+			# encode the frame in JPEG format
+			(flag, encodedImage) = cv2.imencode(".jpg", outputFrame)
 
-                try:
-                    #vgg-face expects inputs (224, 224, 3)
-                    detected_face = cv2.resize(detected_face, (224, 224))
+			# ensure the frame was successfully encoded
+			if not flag:
+				continue
 
-                    img_pixels = image.img_to_array(detected_face)
-                    img_pixels = np.expand_dims(img_pixels, axis = 0)
-                    img_pixels /= 255
+		# yield the output frame in the byte format
+		yield(b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + 
+			bytearray(encodedImage) + b'\r\n')
 
-                    #find out age and gender
-                    age_distributions = age_model.predict(img_pixels)
-                    apparent_age = str(int(np.floor(np.sum(age_distributions * output_indexes, axis = 1))[0]))
+@app.route("/video_feed")
+def video_feed():
+	# return the response generated along with the specific media
+	# type (mime type)
+	return Response(generate(),
+		mimetype = "multipart/x-mixed-replace; boundary=frame")
 
-                    gender_distribution = gender_model.predict(img_pixels)[0]
-                    gender_index = np.argmax(gender_distribution)
+# check to see if this is the main thread of execution
+if __name__ == '__main__':
+	# construct the argument parser and parse command line arguments
+	ap = argparse.ArgumentParser()
+	ap.add_argument("-i", "--ip", type=str, required=True,
+		help="ip address of the device")
+	ap.add_argument("-o", "--port", type=int, required=True,
+		help="ephemeral port number of the server (1024 to 65535)")
+	ap.add_argument("-f", "--frame-count", type=int, default=32,
+		help="# of frames used to construct the background model")
+	args = vars(ap.parse_args())
 
-                    if gender_index == 0: gender = "F"
-                    else: gender = "M"
+	# start a thread that will perform motion detection
+	t = threading.Thread(target=detect_motion, args=(
+		args["frame_count"],))
+	t.daemon = True
+	t.start()
 
-                    #background for age gender declaration
-                    info_box_color = (46,200,255)
-                    #triangle_cnt = np.array( [(x+int(w/2), y+10), (x+int(w/2)-25, y-20), (x+int(w/2)+25, y-20)] )
-                    triangle_cnt = np.array( [(x+int(w/2), y), (x+int(w/2)-20, y-20), (x+int(w/2)+20, y-20)] )
-                    cv2.drawContours(img, [triangle_cnt], 0, info_box_color, -1)
-                    cv2.rectangle(img,(x+int(w/2)-50,y-20),(x+int(w/2)+50,y-90),info_box_color,cv2.FILLED)
+	# start the flask app
+	#app.run(host=args["ip"], port=args["port"], debug=True,
+#		threaded=True, use_reloader=False)
+	app.run()
 
-                    #labels for age and gender
-                    cv2.putText(img, apparent_age, (x+int(w/2), y - 45), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 111, 255), 2)
-
-                    if enableGenderIcons:
-                        if gender == 'M': gender_icon = male_icon
-                        else: gender_icon = female_icon
-
-                        img[y-75:y-75+male_icon.shape[0], x+int(w/2)-45:x+int(w/2)-45+male_icon.shape[1]] = gender_icon
-                    else:
-                        cv2.putText(img, gender, (x+int(w/2)-42, y - 45), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 111, 255), 2)
-
-                except Exception as e:
-                    print("exception",str(e))
-
-        cv2.imshow('img',img)
-    yield (b'--frame\r\n'b'Content-Type: text/plain\r\n\r\n'+open('img', 'rb').read() + b'\r\n')
-        
-
-
-#------------------------
-        
-@app.route('/video')
-def video():
-    return Response(stream(),mimetype='multipart/x-mixed-replace; boundary=frame')
-
-
-
-if __name__ == "__main__":
-    # debug를 True로 세팅하면, 해당 서버 세팅 후에 코드가 바뀌어도 문제없이 실행됨. 
-    app.run(host='127.0.0.1', port=8000, debug = True)
-    
+# release the video stream pointer
+vs.stop()
